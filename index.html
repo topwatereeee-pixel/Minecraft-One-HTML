@@ -336,22 +336,58 @@ class MultiplayerManager{
     let h=0; for(let i=0;i<id.length;i++) h=(h*31+id.charCodeAt(i))%360;
     return new THREE.Color(`hsl(${h},85%,60%)`);
   }
+  createSteveModel(id, name){
+    const group=new THREE.Group();
+    const skinColor=0xffdbac;
+    const shirtColor=this.generateColorFromId(id);
+    const pantsColor=new THREE.Color(`hsl(${(shirtColor.getHSL({}).h*360+40)%360},60%,35%)`);
+    // Materials
+    const headMat=new THREE.MeshLambertMaterial({color:skinColor});
+    const bodyMat=new THREE.MeshLambertMaterial({color:shirtColor});
+    const armMat=new THREE.MeshLambertMaterial({color:skinColor});
+    const legMat=new THREE.MeshLambertMaterial({color:pantsColor});
+    // Head 0.5
+    const head=new THREE.Mesh(new THREE.BoxGeometry(0.45,0.45,0.45), headMat);
+    head.position.set(0,1.62,0);
+    // Body/torso
+    const torso=new THREE.Mesh(new THREE.BoxGeometry(0.5,0.7,0.25), bodyMat);
+    torso.position.set(0,1.05,0);
+    // Arms
+    const leftArm=new THREE.Mesh(new THREE.BoxGeometry(0.14,0.6,0.14), armMat);
+    leftArm.position.set(-0.32,1.05,0);
+    leftArm.geometry.translate(0,-0.2,0);
+    const rightArm=new THREE.Mesh(new THREE.BoxGeometry(0.14,0.6,0.14), armMat);
+    rightArm.position.set(0.32,1.05,0);
+    rightArm.geometry.translate(0,-0.2,0);
+    // Legs
+    const leftLeg=new THREE.Mesh(new THREE.BoxGeometry(0.18,0.7,0.18), legMat);
+    leftLeg.position.set(-0.12,0.35,0);
+    leftLeg.geometry.translate(0,-0.35,0);
+    const rightLeg=new THREE.Mesh(new THREE.BoxGeometry(0.18,0.7,0.18), legMat);
+    rightLeg.position.set(0.12,0.35,0);
+    rightLeg.geometry.translate(0,-0.35,0);
+    group.add(torso,head,leftArm,rightArm,leftLeg,rightLeg);
+    // name tag
+    const canvas=document.createElement('canvas'); canvas.width=256; canvas.height=64;
+    const ctx=canvas.getContext('2d'); ctx.fillStyle='rgba(0,0,0,0.65)'; ctx.fillRect(0,0,256,64); ctx.fillStyle='#fff'; ctx.font='bold 22px sans-serif'; ctx.textAlign='center'; ctx.strokeStyle='rgba(0,0,0,0.8)'; ctx.lineWidth=3; ctx.strokeText(name||id.slice(0,8),128,40); ctx.fillText(name||id.slice(0,8),128,40);
+    const tex=new THREE.CanvasTexture(canvas); tex.colorSpace=THREE.SRGBColorSpace;
+    const sprMat=new THREE.SpriteMaterial({map:tex, transparent:true}); const spr=new THREE.Sprite(sprMat); spr.position.y=2.45; spr.scale.set(1.8,0.45,1);
+    group.add(spr);
+    // shadow disc
+    const shadow=new THREE.Mesh(new THREE.CircleGeometry(0.28,12), new THREE.MeshBasicMaterial({color:0x000000, transparent:true, opacity:0.22, side:THREE.DoubleSide}));
+    shadow.rotation.x=-Math.PI/2; shadow.position.y=0.02;
+    group.add(shadow);
+    // store refs for anim
+    group.userData={leftArm,rightArm,leftLeg,rightLeg,head,torso,shadow,spr,canvas};
+    return group;
+  }
   getOrCreateRemoteMesh(id, name){
     if(this.remotePlayers.has(id)) return this.remotePlayers.get(id);
-    const group=new THREE.Group();
-    const bodyMat=new THREE.MeshLambertMaterial({color:this.generateColorFromId(id)});
-    const body=new THREE.Mesh(new THREE.BoxGeometry(0.6,1.0,0.35), bodyMat);
-    body.position.y=0.8;
-    const head=new THREE.Mesh(new THREE.BoxGeometry(0.5,0.5,0.5), new THREE.MeshLambertMaterial({color:0xffdbac}));
-    head.position.y=1.55;
-    group.add(body); group.add(head);
-    // name tag canvas sprite
-    const canvas=document.createElement('canvas'); canvas.width=256; canvas.height=64;
-    const ctx=canvas.getContext('2d'); ctx.fillStyle='rgba(0,0,0,0.6)'; ctx.fillRect(0,0,256,64); ctx.fillStyle='#fff'; ctx.font='bold 24px sans-serif'; ctx.textAlign='center'; ctx.fillText(name||id.slice(0,8),128,40);
-    const tex=new THREE.CanvasTexture(canvas); const sprMat=new THREE.SpriteMaterial({map:tex}); const spr=new THREE.Sprite(sprMat); spr.position.y=2.4; spr.scale.set(1.6,0.4,1);
-    group.add(spr);
+    const group=this.createSteveModel(id,name||id.slice(0,8));
     this.scene.add(group);
-    const rec={mesh:group, name, id, pos:new THREE.Vector3(), yaw:0,pitch:0,last:Date.now()};
+    const rec={mesh:group, name, id, pos:new THREE.Vector3(), yaw:0,pitch:0,last:Date.now(), prevPos:new THREE.Vector3(), walkTime:Math.random()*10};
+    const ud=group.userData;
+    rec.armLA=ud.leftArm; rec.armRA=ud.rightArm; rec.legLL=ud.leftLeg; rec.legRL=ud.rightLeg; rec.head=ud.head;
     this.remotePlayers.set(id, rec);
     this.updatePlayerListUI();
     return rec;
@@ -718,10 +754,23 @@ function animate(now){
     // MP tick
     if(window.mp && (window.mp.isHost||window.mp.isConnected)){
       if(!window.mp._lastPos || now-window.mp._lastPos>60){ window.mp.broadcastPos(); window.mp._lastPos=now; }
-      // update remote meshes
+      // update remote meshes with full player model anim
       for(const [id,rec] of window.mp.remotePlayers){
-        rec.mesh.position.lerp(rec.pos, 0.25);
+        // smooth pos
+        if(!rec.prevPos) rec.prevPos=rec.pos.clone();
+        const delta = rec.pos.clone().sub(rec.prevPos);
+        const speed = Math.min(delta.length()*10, 6);
+        rec.prevPos.lerp(rec.pos, 0.15);
+        rec.mesh.position.lerp(rec.pos, 0.22);
         rec.mesh.rotation.y = -rec.yaw - Math.PI/2;
+        // head pitch
+        if(rec.head) rec.head.rotation.x = -rec.pitch*0.6;
+        // walk anim
+        rec.walkTime = (rec.walkTime||0) + 0.016 * (speed>0.1? speed*2.2 : 0.6);
+        const swing = Math.sin(rec.walkTime) * (speed>0.12? 0.55 : 0.04);
+        if(rec.armLA){ rec.armLA.rotation.x = swing; rec.armRA.rotation.x = -swing; }
+        if(rec.legLL){ rec.legLL.rotation.x = -swing; rec.legRL.rotation.x = swing; }
+        rec.prevPos.copy(rec.pos);
       }
     }
   }
