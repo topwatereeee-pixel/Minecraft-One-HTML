@@ -1,5 +1,3 @@
-<!DOCTYPE html>
-<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -93,33 +91,44 @@ function isOpaqueSolid(id){ // fully opaque that hides neighbors
 function isTransparent(id){ return id===BLOCK.WATER || id===BLOCK.GLASS || id===BLOCK.LEAVES; }
 
 /* Face culling logic: returns true if face of current should be rendered against neighbor
-   Design to avoid double faces & z-fighting, prioritize transparent over opaque where makes sense.
+   Fixed to guarantee no holes and no invisible sides.
+   - Air never renders
+   - Same block type culls
+   - Opaque vs Opaque culls (internal)
+   - At opaque<->transparent interface, transparent has priority so you see glass/leaves/water not dirt wall
+   - Transparent vs transparent uses priority GLASS > LEAVES > WATER to avoid double faces / z-fighting
 */
 function shouldRenderFace(currentId, neighborId){
-  if(currentId===neighborId) return false;
   if(currentId===BLOCK.AIR) return false;
-  if(neighborId===BLOCK.AIR) return true; // any block vs air -> visible
-  // Opaque solids:
-  if(isOpaqueSolid(currentId)){
-    if(isOpaqueSolid(neighborId)) return false; // opaque vs opaque cull
-    if(neighborId===BLOCK.GLASS) return false; // give glass priority
-    if(neighborId===BLOCK.LEAVES) return false; // leaves priority
-    // vs water -> opaque shows dirt wall under water (okay)
+  if(neighborId===BLOCK.AIR) return true;
+  if(currentId===neighborId) return false;
+
+  const currOpaque = isOpaqueSolid(currentId);
+  const neighOpaque = isOpaqueSolid(neighborId);
+  const currTrans = isTransparent(currentId);
+  const neighTrans = isTransparent(neighborId);
+
+  // Opaque vs Opaque internal face -> hide
+  if(currOpaque && neighOpaque) return false;
+
+  // Opaque vs Transparent -> transparent wins (prevents invisible holes and shows windows/water/leaves)
+  if(currOpaque && neighTrans) return false;
+
+  // Transparent vs Opaque -> show transparent
+  if(currTrans && neighOpaque) return true;
+
+  // Transparent vs Transparent different types -> higher priority wins
+  if(currTrans && neighTrans){
+    const priority = { [BLOCK.WATER]:1, [BLOCK.LEAVES]:2, [BLOCK.GLASS]:3 };
+    const pCur = priority[currentId] || 0;
+    const pNei = priority[neighborId] || 0;
+    // if neighbor higher priority, hide current
+    if(pNei > pCur) return false;
+    // if current higher or equal, show (equal can't happen because same id already culled)
     return true;
   }
-  // Water: only visible vs air (flat surface / waterfall). Side vs solid hidden -> shows solid wall.
-  if(currentId===BLOCK.WATER){
-    return neighborId===BLOCK.AIR; // only water surface against air
-  }
-  // Glass: always visible except vs same glass -> acts as window priority
-  if(currentId===BLOCK.GLASS){
-    return true;
-  }
-  // Leaves: visible against air and opaque solids, but hidden vs glass & same leaves
-  if(currentId===BLOCK.LEAVES){
-    if(neighborId===BLOCK.GLASS) return false;
-    return true;
-  }
+
+  // Fallback: show (covers opaque vs special like air already handled)
   return true;
 }
 
@@ -427,6 +436,7 @@ class World {
       vertexColors: true,
       transparent: true,
       alphaTest: 0.1,
+      side: THREE.DoubleSide
     });
     // For water we keep same material transparent, but depth issues mitigated by renderOrder later maybe
   }
